@@ -624,7 +624,7 @@ class Database:
                         demand, lead_data.get('source', 'Radar'), lead_data.get('urgency_score', 0),
                         lead_data.get('is_confirmed', False), lead_data.get('email', 'N/D'), 
                         lead_data.get('social_url', 'N/D'), lead_data.get('booking_url', 'N/D'), lead_data.get('scanned_at'),
-                        lead_data.get('intencao_ativa', False) or lead_data.get('intencao_ativa', 0), 
+                        bool(lead_data.get('intencao_ativa', False)),
                         lead_data.get('resumo_sinal', 'N/D'), lead_data.get('link_fonte', 'N/D'), 
                         lead_data.get('score_urgencia', 0), lead_data.get('categoria_demanda', 'nenhuma'),
                         lead_data.get('pilar', 'A'), True if fav_status else False,
@@ -667,7 +667,7 @@ class Database:
                         demand, lead_data.get('source', 'Radar'), lead_data.get('urgency_score', 0),
                         lead_data.get('is_confirmed', False), lead_data.get('email', 'N/D'), 
                         lead_data.get('social_url', 'N/D'), lead_data.get('booking_url', 'N/D'), lead_data.get('scanned_at'),
-                        lead_data.get('intencao_ativa', False) or lead_data.get('intencao_ativa', 0), 
+                        bool(lead_data.get('intencao_ativa', False)),
                         lead_data.get('resumo_sinal', 'N/D'), lead_data.get('link_fonte', 'N/D'), 
                         lead_data.get('score_urgencia', 0), lead_data.get('categoria_demanda', 'nenhuma'),
                         lead_data.get('pilar', 'A'), True if fav_status else False

@@ -1,17 +1,19 @@
 """
 ApifyClient — Integração com Apify para importação de leads.
 
-Usa o Google Maps Scraper da Apify para buscar:
+Usa o Google Maps Extractor (compass) da Apify para buscar:
   - Administradoras de condomínios
   - Síndicos profissionais
-  - Empresas de facilities/pintura predial
+  - Empresas de facilities/manutenção predial
 
 Cada lead importado vem com: nome, telefone, email, endereço, site, coordenadas.
+Filtros: anti-duplicata (verifica nomes existentes no DB) e qualidade (phone OU email obrigatório).
 """
 import os
 import re
 import json
 import time
+import datetime
 import requests
 from src.utils.logger import logger
 from dotenv import load_dotenv
@@ -21,7 +23,7 @@ load_dotenv()
 APIFY_TOKEN = os.getenv("APIFY_API_TOKEN", "")
 APIFY_BASE = "https://api.apify.com/v2"
 
-GOOGLE_MAPS_ACTOR = "compass~google-maps-extractor"
+GOOGLE_MAPS_ACTOR = "compass~crawler-google-places"
 
 SEARCH_CONFIGS = {
     "administradoras": {
@@ -52,6 +54,14 @@ REGIONS = [
     {"name": "Barueri — SP", "location": "Barueri, SP, Brasil"},
 ]
 
+REGIONS_FOCAL = [
+    {"name": "Sao Paulo — Centro", "location": "Centro, Sao Paulo, SP, Brasil"},
+    {"name": "Sao Paulo — Zona Sul", "location": "Zona Sul, Sao Paulo, SP, Brasil"},
+    {"name": "Sao Paulo — Zona Oeste", "location": "Zona Oeste, Sao Paulo, SP, Brasil"},
+    {"name": "Guarulhos — SP", "location": "Guarulhos, SP, Brasil"},
+    {"name": "Campinas — SP", "location": "Campinas, SP, Brasil"},
+]
+
 
 class ApifyClient:
     """Cliente para interagir com a API da Apify."""
@@ -69,16 +79,19 @@ class ApifyClient:
         self,
         search: str,
         location: str = "Sao Paulo, SP, Brasil",
-        max_results: int = 200,
+        max_results: int = 100,
         language: str = "pt-BR",
+        include_emails: bool = True,
     ) -> list[dict]:
         """
-        Executa o ator Google Maps Scraper e retorna os resultados.
+        Executa o ator Google Maps Extractor e retorna os resultados.
 
         Args:
             search: Termo de busca (ex: "administradora de condominios")
             location: Localização (ex: "Sao Paulo, SP, Brasil")
-            max_results: Máximo de resultados (padrão 200)
+            max_results: Máximo de resultados (padrão 100 para economizar $)
+            language: Idioma (padrão pt-BR)
+            include_emails: Habilitar email enrichment (padrão True)
 
         Returns:
             Lista de dicts com os leads encontrados
@@ -87,9 +100,9 @@ class ApifyClient:
             logger.error("ApifyClient: Token não configurado")
             return []
 
-        logger.info(f"ApifyClient: Buscando '{search}' em '{location}'...")
+        logger.info(f"ApifyClient: Buscando '{search}' em '{location}' (max={max_results}, emails={include_emails})...")
 
-        # Input do ator
+        # Input do ator — compass~crawler-google-places (pago, mais dados)
         actor_input = {
             "searchStringsArray": [search],
             "locationQuery": location,
@@ -97,14 +110,10 @@ class ApifyClient:
             "language": language,
             "maxImages": 0,
             "maxReviews": 0,
-            "includeOpeningHours": "no",
-            "includePopularTimes": "no",
-            "includeQuestionsAndAnswers": "no",
-            "includePeopleAlsoSearch": "no",
-            "proxyConfiguration": {
-                "useApifyProxy": True,
-                "apifyProxyGroups": ["BUYPROXIES94952"],
-            },
+            "includeOpeningHours": False,
+            "includePopularTimes": False,
+            "includeQuestionsAndAnswers": False,
+            "includePeopleAlsoSearch": False,
             "debug": False,
         }
 
@@ -197,9 +206,10 @@ class ApifyClient:
 
         return all_items
 
-    def normalize_lead(self, raw: dict, category: str = "", region: str = "") -> dict:
+    def normalize_lead(self, raw: dict, category: str = "", region: str = "") -> dict | None:
         """
         Normaliza um lead bruto da Apify para o formato interno.
+        Retorna None se o lead não tiver telefone OU email válido.
         """
         name = raw.get("title", "")
         if not name:
@@ -218,6 +228,12 @@ class ApifyClient:
             emails = raw.get("emails", [])
             if emails:
                 email = emails[0]
+
+        # Filtro de qualidade: precisa ter phone válido
+        has_phone = phone and phone.strip() not in ("", "N/D", "None")
+        has_email = email and email.strip() not in ("", "N/D", "None")
+        if not has_phone:
+            return None
 
         # Endereço
         address = raw.get("address", "")
@@ -239,29 +255,29 @@ class ApifyClient:
 
         # Score baseado nos dados disponíveis
         score = 5.0
-        if phone and email:
+        if has_phone and has_email:
             score = 9.0
-        elif phone or email:
+        elif has_phone or has_email:
             score = 7.0
         if website:
             score += 0.5
         if address:
             score += 0.5
 
-        import datetime
         now = datetime.datetime.now().isoformat()
 
         return {
             "name": name.strip(),
             "address": address.strip() if address else (region or "Sao Paulo, SP"),
-            "phone": phone or "N/D",
-            "email": email or "N/D",
-            "website": website or "N/D",
-            "coords": coords,
+            "phone": phone.strip() if has_phone else "N/D",
+            "email": email.strip() if has_email else "N/D",
+            "website": website.strip() if website else "N/D",
+            "lat": coords["lat"] if coords else None,
+            "lng": coords["lng"] if coords else None,
             "score": min(score, 10.0),
             "category": category or "lead_apify",
             "source": f"Apify — {region or 'SP'}",
-            "justification": f"Lead importado via Apify Google Maps — {category} — {region}",
+            "justification": f"Lead importado via Apify Google Maps Extractor — {category} — {region}",
             "urgency_score": 7.0,
             "contact_status": "Aguardando Abordagem",
             "pilar": "M",
@@ -287,33 +303,58 @@ def get_import_stats() -> dict:
 def import_all_regions(
     token: str,
     db=None,
-    max_per_category: int = 200,
+    max_per_category: int = 100,
+    regions: list = None,
+    categories: dict = None,
+    existing_names: set = None,
     progress_callback=None,
 ) -> dict:
     """
     Importa leads de todas as regiões e categorias.
 
+    Args:
+        token: Apify API token
+        db: Instância do Database (opcional — salva direto no DB)
+        max_per_category: Máximo de leads por busca (padrão 100)
+        regions: Lista de regiões (padrão: REGIONS_FOCAL)
+        categories: Dict de categorias (padrão: SEARCH_CONFIGS)
+        existing_names: Set de nomes já existentes no DB (anti-duplicata)
+        progress_callback: Função de callback para progresso
+
     Returns:
-        {"imported": int, "skipped": int, "total": int}
+        {"imported": int, "skipped_dup": int, "skipped_no_contact": int, "total": int}
     """
     client = ApifyClient(token=token)
     all_leads = []
     total_imported = 0
-    total_skipped = 0
-    seen_names = set()
+    total_skipped_dup = 0
+    total_skipped_no_contact = 0
+    total_skipped_error = 0
+    seen_names = set(existing_names) if existing_names else set()
+    regions_to_use = regions or REGIONS_FOCAL
+    cats_to_use = categories or SEARCH_CONFIGS
 
-    for region in REGIONS:
+    total_buscas = len(regions_to_use) * len(cats_to_use)
+    busca_atual = 0
+
+    for region in regions_to_use:
         region_name = region["name"]
         logger.info(f"ApifyClient: Importando região {region_name}...")
 
-        for cat_key, config in SEARCH_CONFIGS.items():
-            logger.info(f"ApifyClient:   Categoria '{cat_key}' em '{region_name}'")
+        for cat_key, config in cats_to_use.items():
+            busca_atual += 1
+            logger.info(f"ApifyClient:   [{busca_atual}/{total_buscas}] Categoria '{cat_key}' em '{region_name}'")
 
             raw_results = client.run_google_maps_search(
                 search=config["search"],
                 location=region["location"],
                 max_results=max_per_category,
+                include_emails=True,
             )
+
+            region_new = 0
+            region_dup = 0
+            region_no_contact = 0
 
             for raw in raw_results:
                 normalized = client.normalize_lead(
@@ -321,35 +362,51 @@ def import_all_regions(
                     category=config["category"],
                     region=region_name,
                 )
+
                 if not normalized:
-                    total_skipped += 1
+                    region_no_contact += 1
+                    total_skipped_no_contact += 1
                     continue
 
-                # Deduplica por nome
+                # Anti-duplicata: verificar se nome já existe no DB
                 key = normalized["name"].lower().strip()
-                if key and key not in seen_names:
-                    seen_names.add(key)
-                    all_leads.append(normalized)
+                if key in seen_names:
+                    region_dup += 1
+                    total_skipped_dup += 1
+                    continue
 
-                    if db:
-                        try:
-                            db.upsert_lead(normalized)
-                            total_imported += 1
-                        except Exception as e:
-                            logger.warning(f"ApifyClient: Erro ao salvar: {e}")
-                            total_skipped += 1
-                    else:
+                seen_names.add(key)
+                all_leads.append(normalized)
+
+                if db:
+                    try:
+                        db.upsert_lead(normalized)
                         total_imported += 1
+                        region_new += 1
+                    except Exception as e:
+                        logger.warning(f"ApifyClient: Erro ao salvar: {e}")
+                        total_skipped_error += 1
+                else:
+                    total_imported += 1
+                    region_new += 1
+
+            logger.info(f"ApifyClient:     Resultado: {region_new} novos, {region_dup} duplicados, {region_no_contact} sem contato")
+
+            if progress_callback:
+                progress_callback(busca_atual, total_buscas, region_new, total_imported)
 
             time.sleep(2)
 
     logger.info(
-        f"ApifyClient: Importação concluída — {total_imported} leads, "
-        f"{total_skipped} ignorados, {len(all_leads)} únicos"
+        f"ApifyClient: Importação concluída — {total_imported} novos, "
+        f"{total_skipped_dup} duplicados, {total_skipped_no_contact} sem contato, "
+        f"{total_skipped_error} erros"
     )
 
     return {
         "imported": total_imported,
-        "skipped": total_skipped,
-        "total": total_imported + total_skipped,
+        "skipped_dup": total_skipped_dup,
+        "skipped_no_contact": total_skipped_no_contact,
+        "skipped_error": total_skipped_error,
+        "total": total_imported + total_skipped_dup + total_skipped_no_contact + total_skipped_error,
     }
