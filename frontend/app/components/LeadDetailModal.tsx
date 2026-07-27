@@ -181,246 +181,229 @@ export default function LeadDetailModal({ lead, isOpen, onClose, onSave, readOnl
             </button>
 
             {/* ── Coluna 1: Informações do Lead ── */}
-            <div className={`flex-1 flex flex-col gap-4 sm:gap-5 md:border-r md:border-white/5 md:pr-8 md:overflow-y-auto md:max-h-full pr-2 scrollbar-thin ${readOnly ? "pt-10 md:pt-6" : "pt-8 md:pt-0"}`}>
-              {/* Badges + Nome */}
+            <div className={`flex-1 flex flex-col gap-3 sm:gap-4 md:border-r md:border-white/5 md:pr-6 md:overflow-y-auto md:max-h-full pr-2 scrollbar-thin ${readOnly ? "pt-10 md:pt-6" : "pt-8 md:pt-0"}`}>
+
+              {/* ── Bloco 1: Cabeçalho ── */}
               <div>
-                <div className="flex items-center gap-2 mb-2 flex-wrap">
-                  <span className="bg-yellow-400/10 text-yellow-400 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border border-yellow-400/20 flex items-center gap-1">
-                    <Sparkles size={10} /> Lead Radar
+                {/* Badges */}
+                <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+                  <span className="bg-yellow-400/10 text-yellow-400 text-[9px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full border border-yellow-400/20 flex items-center gap-1">
+                    <Sparkles size={9} /> Lead Radar
                   </span>
                   {lead.is_favorite ? (
-                    <span className="bg-rose-500/10 text-rose-400 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border border-rose-500/20 flex items-center gap-1">
-                      <Flame size={10} className="fill-rose-400" /> Lead Quente
+                    <span className="bg-rose-500/10 text-rose-400 text-[9px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full border border-rose-500/20 flex items-center gap-1">
+                      <Flame size={9} className="fill-rose-400" /> Lead Quente
                     </span>
                   ) : null}
-                  
-                  {/* Badge de Pilar Comercial */}
                   {(lead.pilar || 'A') === 'A' && (
-                    <span className="bg-blue-500/10 text-blue-400 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border border-blue-500/20 flex items-center gap-1">
-                      <Building2 size={10} /> Pilar A: Condomínios
+                    <span className="bg-blue-500/10 text-blue-400 text-[9px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full border border-blue-500/20 flex items-center gap-1">
+                      <Building2 size={9} /> Pilar A: Condomínios
                     </span>
                   )}
                   {lead.pilar === 'B' && (
-                    <span className="bg-emerald-500/10 text-emerald-400 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border border-emerald-500/20 flex items-center gap-1">
-                      <Building size={10} /> Pilar B: Grande Porte
+                    <span className="bg-emerald-500/10 text-emerald-400 text-[9px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1">
+                      <Building size={9} /> Pilar B: Grande Porte
+                    </span>
+                  )}
+                  {lead.pilar === 'C' && (
+                    <span className="bg-amber-500/10 text-amber-400 text-[9px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full border border-amber-500/20 flex items-center gap-1">
+                      <ScrollText size={9} /> Pilar C: Editais
                     </span>
                   )}
                 </div>
-                <h2 className="text-xl sm:text-2xl lg:text-3xl font-black text-white uppercase tracking-tight leading-tight pr-10">
+                {/* Nome + Endereço */}
+                <h2 className="text-lg sm:text-xl lg:text-2xl font-black text-white uppercase tracking-tight leading-tight pr-8">
                   {lead.name}
                 </h2>
-                <p className="text-slate-400 text-xs flex items-center gap-1.5 mt-2 font-medium">
-                  <MapPin size={13} className="text-yellow-400 shrink-0" />
-                  {lead.address}
+                <p className="text-slate-400 text-xs flex items-center gap-1.5 mt-1.5 font-medium break-words">
+                  <MapPin size={12} className="text-yellow-400 shrink-0" />
+                  <span className="break-words">{lead.address}</span>
                 </p>
               </div>
 
-              {/* Fachada + Botão Corrigir */}
-              <div className="flex flex-col gap-2">
-                <div className="w-full h-36 sm:h-44 rounded-xl sm:rounded-[2rem] overflow-hidden bg-slate-950 border border-white/5 relative shrink-0">
-                    <img
-                      src={resolveLeadImageUrl(fachadaPreview)}
-                      className="w-full h-full object-cover"
-                      alt="Fachada"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=600&auto=format&fit=crop&q=80";
-                      }}
-                    />
+              {/* ── Bloco 2: Contato Rápido (fachada + telefone + ações) ── */}
+              <div className="flex gap-3">
+                {/* Thumbnail da Fachada */}
+                <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-xl overflow-hidden bg-slate-950 border border-white/5 relative shrink-0">
+                  <img
+                    src={resolveLeadImageUrl(fachadaPreview)}
+                    className="w-full h-full object-cover"
+                    alt="Fachada"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=600&auto=format&fit=crop&q=80";
+                    }}
+                  />
                   {!readOnly && (
                     <button
                       onClick={() => setFachadaInputVisible(v => !v)}
-                      className="absolute bottom-2 right-2 bg-slate-900/90 hover:bg-yellow-400 hover:text-slate-900 text-slate-300 text-[9px] font-black uppercase tracking-widest px-2.5 py-1.5 rounded-xl border border-white/10 transition-all flex items-center gap-1.5 backdrop-blur-sm"
+                      className="absolute bottom-1 right-1 bg-slate-900/90 hover:bg-yellow-400 hover:text-slate-900 text-slate-300 text-[8px] font-black uppercase tracking-widest px-1.5 py-1 rounded-lg border border-white/10 transition-all flex items-center gap-1 backdrop-blur-sm"
                     >
-                      <ImageIcon size={10} /> Corrigir Foto
+                      <ImageIcon size={8} /> Foto
                     </button>
                   )}
                 </div>
 
-                <AnimatePresence>
-                  {fachadaInputVisible && !readOnly && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="overflow-hidden"
-                    >
-                      <div className="flex gap-2 bg-slate-950 border border-yellow-400/30 rounded-xl p-3">
-                        <div className="flex-1">
-                          <label className="text-[9px] font-black text-yellow-400 uppercase tracking-widest block mb-1">
-                            Cole a URL da foto correta da fachada
-                          </label>
-                          <input
-                            type="url"
-                            value={fachadaUrl}
-                            onChange={e => { setFachadaUrl(e.target.value); setFachadaError(false); }}
-                            placeholder="https://exemplo.com/fachada.jpg"
-                            className="w-full bg-transparent text-white text-xs font-medium outline-none placeholder-slate-600"
-                          />
-                        </div>
-                        <button
-                          onClick={handleApplyFachada}
-                          disabled={!fachadaUrl}
-                          className="bg-yellow-400 hover:bg-yellow-300 disabled:opacity-40 text-slate-900 font-black px-4 py-2 rounded-lg text-[10px] uppercase tracking-widest transition-all shrink-0 flex items-center gap-1"
-                        >
-                          <Check size={12} /> Aplicar
-                        </button>
-                      </div>
-                      <p className="text-[9px] text-slate-500 mt-1.5 px-1 flex items-center gap-1">
-                        <AlertCircle size={9} /> A foto é salva ao clicar em "Salvar Registro no CRM".
-                      </p>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Destaque do Telefone Neon Cyberpunk */}
-              <div className="bg-slate-950/80 border border-yellow-400/20 p-4 rounded-2xl flex flex-col items-center justify-center text-center shadow-[0_0_15px_rgba(250,204,21,0.05)] relative overflow-hidden group">
-                <div className="absolute inset-0 bg-gradient-to-r from-yellow-400/0 via-yellow-400/5 to-yellow-400/0 -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1.5 flex items-center gap-1.5">
-                  <Phone size={12} className="text-yellow-400 animate-pulse" /> LINHA DE CONTATO SNIPER
-                </span>
-                <span className="text-xl sm:text-2xl md:text-3xl font-black text-yellow-400 font-mono break-all tracking-wider drop-shadow-[0_0_8px_rgba(250,204,21,0.3)]">
-                  {phoneRaw || 'TELEFONE NÃO CADASTRADO'}
-                </span>
-              </div>
-
-              {/* Botões de Ação: WhatsApp e E-mail */}
-              <div className="flex flex-col sm:flex-row gap-3">
-                {whatsappUrl ? (
-                  <a
-                    href={whatsappUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex-1 bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-black py-3.5 px-4 rounded-2xl flex items-center justify-center gap-2.5 transition-all text-xs uppercase tracking-widest shadow-lg shadow-yellow-400/10 hover:scale-[1.02] active:scale-95"
-                  >
-                    <Phone size={15} className="fill-slate-900" />
-                    Chamar WhatsApp
-                  </a>
-                ) : (
-                  <button disabled className="flex-1 bg-slate-800 text-slate-600 font-black py-3.5 px-4 rounded-2xl flex items-center justify-center gap-2.5 text-xs uppercase tracking-widest opacity-40 cursor-not-allowed">
-                    <Phone size={15} /> Sem WhatsApp
-                  </button>
-                )}
-
-                {lead.email && lead.email !== "N/D" ? (
-                  <a
-                    href={`mailto:${lead.email}`}
-                    className="flex-1 bg-slate-800 hover:bg-slate-700 border border-white/5 hover:border-white/10 text-white font-black py-3.5 px-4 rounded-2xl flex items-center justify-center gap-2.5 transition-all text-xs uppercase tracking-widest hover:scale-[1.02] active:scale-95"
-                  >
-                    <Mail size={15} className="text-yellow-400" />
-                    Mandar E-mail
-                  </a>
-                ) : (
-                  <button disabled className="flex-1 bg-slate-800 text-slate-600 font-black py-3.5 px-4 rounded-2xl flex items-center justify-center gap-2.5 text-xs uppercase tracking-widest opacity-40 cursor-not-allowed">
-                    <Mail size={15} /> Sem E-mail
-                  </button>
-                  )}
-                  {lead.pilar === 'C' && (
-                    <span className="bg-amber-500/10 text-amber-400 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border border-amber-500/20 flex items-center gap-1">
-                      <ScrollText size={10} /> Pilar C: Editais
+                {/* Info de Contato */}
+                <div className="flex-1 flex flex-col justify-between min-w-0">
+                  {/* Telefone */}
+                  <div>
+                    <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1 mb-0.5">
+                      <Phone size={10} className="text-yellow-400" /> Telefone
                     </span>
-                  )}
+                    <p className="text-sm sm:text-base font-black text-yellow-400 font-mono break-all leading-tight">
+                      {phoneRaw || 'Não cadastrado'}
+                    </p>
+                  </div>
+                  {/* Botões de Ação */}
+                  <div className="flex gap-2 mt-2">
+                    {whatsappUrl ? (
+                      <a
+                        href={whatsappUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex-1 bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-black py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 transition-all text-[10px] uppercase tracking-widest shadow-lg shadow-yellow-400/10 hover:scale-[1.02] active:scale-95"
+                      >
+                        <Phone size={12} className="fill-slate-900" /> WhatsApp
+                      </a>
+                    ) : (
+                      <button disabled className="flex-1 bg-slate-800 text-slate-600 font-black py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-widest opacity-40 cursor-not-allowed">
+                        <Phone size={12} /> Sem WhatsApp
+                      </button>
+                    )}
+                    {lead.email && lead.email !== "N/D" ? (
+                      <a
+                        href={`mailto:${lead.email}`}
+                        className="flex-1 bg-slate-800 hover:bg-slate-700 border border-white/5 hover:border-white/10 text-white font-black py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 transition-all text-[10px] uppercase tracking-widest hover:scale-[1.02] active:scale-95"
+                      >
+                        <Mail size={12} className="text-yellow-400" /> E-mail
+                      </a>
+                    ) : (
+                      <button disabled className="flex-1 bg-slate-800 text-slate-600 font-black py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-widest opacity-40 cursor-not-allowed">
+                        <Mail size={12} /> Sem E-mail
+                      </button>
+                    )}
+                  </div>
                 </div>
+              </div>
 
-              {/* Inteligência de Obra Ativa */}
-              {lead.intencao_ativa ? (
-                <div className="bg-rose-500/10 p-4 rounded-2xl border border-rose-500/25 space-y-2.5 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-24 h-24 bg-rose-500/5 rounded-full blur-2xl pointer-events-none" />
-                  <h4 className="text-[10px] font-black text-rose-400 uppercase tracking-[0.2em] mb-1.5 flex items-center gap-1.5 animate-pulse">
-                    <Flame size={12} className="fill-rose-400" /> Inteligência de Obra Ativa
-                  </h4>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs border-b border-rose-500/10 pb-1.5">
-                      <span className="text-slate-400">Pilar de Prospecção</span>
-                      {(lead.pilar || 'A') === 'A' && (
-                        <span className="font-black text-blue-400 bg-blue-500/15 border border-blue-500/25 px-2 py-0.5 rounded text-[9px] uppercase tracking-wider flex items-center gap-1">
-                          <Building2 size={10} /> Pilar A: Condomínios
-                        </span>
-                      )}
-                      {lead.pilar === 'B' && (
-                        <span className="font-black text-emerald-400 bg-emerald-500/15 border border-emerald-500/25 px-2 py-0.5 rounded text-[9px] uppercase tracking-wider flex items-center gap-1">
-                          <Building size={10} /> Pilar B: Grande Porte
-                        </span>
-                      )}
-                      {lead.pilar === 'C' && (
-                        <span className="font-black text-amber-400 bg-amber-500/15 border border-amber-500/25 px-2 py-0.5 rounded text-[9px] uppercase tracking-wider flex items-center gap-1">
-                          <ScrollText size={10} /> Pilar C: Editais
-                        </span>
-                      )}
+              {/* Correção de Fachada (colapsável) */}
+              <AnimatePresence>
+                {fachadaInputVisible && !readOnly && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="flex gap-2 bg-slate-950 border border-yellow-400/30 rounded-xl p-3">
+                      <div className="flex-1 min-w-0">
+                        <label className="text-[9px] font-black text-yellow-400 uppercase tracking-widest block mb-1">
+                          URL da foto da fachada
+                        </label>
+                        <input
+                          type="url"
+                          value={fachadaUrl}
+                          onChange={e => { setFachadaUrl(e.target.value); setFachadaError(false); }}
+                          placeholder="https://exemplo.com/fachada.jpg"
+                          className="w-full bg-transparent text-white text-xs font-medium outline-none placeholder-slate-600"
+                        />
+                      </div>
+                      <button
+                        onClick={handleApplyFachada}
+                        disabled={!fachadaUrl}
+                        className="bg-yellow-400 hover:bg-yellow-300 disabled:opacity-40 text-slate-900 font-black px-3 py-1.5 rounded-lg text-[9px] uppercase tracking-widest transition-all shrink-0 flex items-center gap-1"
+                      >
+                        <Check size={10} /> Aplicar
+                      </button>
                     </div>
-                    <div className="flex items-center justify-between text-xs border-b border-rose-500/10 pb-1.5">
-                      <span className="text-slate-400">Score de Urgência da Obra</span>
-                      <span className="font-black text-rose-400 bg-rose-500/20 px-2 py-0.5 rounded text-[10px] shadow-[0_0_8px_rgba(244,63,94,0.2)]">
+                    <p className="text-[9px] text-slate-500 mt-1 px-1 flex items-center gap-1">
+                      <AlertCircle size={8} /> Salva ao clicar em "Salvar Registro no CRM".
+                    </p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* ── Bloco 3: Canais de Contato (compacto) ── */}
+              <div className="bg-slate-950/40 p-3 rounded-xl border border-white/5">
+                <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2 flex items-center gap-1.5">
+                  <User size={10} className="text-yellow-400" /> Canais de Contato
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
+                  <div className="flex items-center justify-between text-xs gap-2">
+                    <span className="text-slate-500 shrink-0">Telefone</span>
+                    <span className="font-bold text-white text-right break-all">{phoneRaw || 'N/D'}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs gap-2">
+                    <span className="text-slate-500 shrink-0">E-mail</span>
+                    <span className="font-bold text-white text-right break-all">{lead.email || 'N/D'}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs gap-2">
+                    <span className="text-slate-500 shrink-0">Website</span>
+                    {lead.website && lead.website !== "N/D" ? (
+                      <a href={lead.website} target="_blank" rel="noreferrer" className="font-bold text-yellow-400 hover:underline flex items-center gap-1 text-right break-all">
+                        {lead.website} <ExternalLink size={9} className="shrink-0" />
+                      </a>
+                    ) : <span className="font-bold text-slate-600">N/D</span>}
+                  </div>
+                  <div className="flex items-center justify-between text-xs gap-2">
+                    <span className="text-slate-500 shrink-0">Social</span>
+                    {lead.social_url && lead.social_url !== "N/D" ? (
+                      <a href={lead.social_url} target="_blank" rel="noreferrer" className="font-bold text-yellow-400 hover:underline flex items-center gap-1 text-right break-all">
+                        Social <ExternalLink size={9} className="shrink-0" />
+                      </a>
+                    ) : <span className="font-bold text-slate-600">N/D</span>}
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Bloco 4: Inteligência de Obra Ativa ── */}
+              {lead.intencao_ativa ? (
+                <div className="bg-rose-500/10 p-3 rounded-xl border border-rose-500/25 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-20 h-20 bg-rose-500/5 rounded-full blur-2xl pointer-events-none" />
+                  <h4 className="text-[9px] font-black text-rose-400 uppercase tracking-[0.2em] mb-2 flex items-center gap-1.5 animate-pulse">
+                    <Flame size={10} className="fill-rose-400" /> Inteligência de Obra Ativa
+                  </h4>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">Urgência</span>
+                      <span className="font-black text-rose-400 bg-rose-500/20 px-2 py-0.5 rounded text-[10px]">
                         {lead.score_urgencia}/10
                       </span>
                     </div>
-                    <div className="flex items-center justify-between text-xs border-b border-rose-500/10 pb-1.5">
+                    <div className="flex items-center justify-between">
                       <span className="text-slate-400">Categoria</span>
                       <span className="font-bold text-white uppercase text-[10px] tracking-wider">
-                        {lead.categoria_demanda === 'pintura_fachada' ? '🎨 Pintura de Fachada' :
-                         lead.categoria_demanda === 'lavagem_pastilhas' ? '🧽 Lavagem de Pastilhas' :
-                         lead.categoria_demanda === 'reforma_geral' ? '🧱 Reforma Geral' : lead.categoria_demanda || 'N/D'}
+                        {lead.categoria_demanda === 'pintura_fachada' ? '🎨 Pintura' :
+                         lead.categoria_demanda === 'lavagem_pastilhas' ? '🧽 Lavagem' :
+                         lead.categoria_demanda === 'reforma_geral' ? '🧱 Reforma' : lead.categoria_demanda || 'N/D'}
                       </span>
                     </div>
-                    <div className="text-xs space-y-1">
-                      <span className="text-slate-500 block">Sinal Detectado:</span>
-                      <p className="text-white font-medium bg-slate-950/60 p-2.5 rounded-xl border border-white/5 leading-relaxed">
-                        {lead.resumo_sinal}
-                      </p>
-                    </div>
                   </div>
+                  {lead.resumo_sinal && (
+                    <p className="text-xs text-white font-medium bg-slate-950/60 p-2 rounded-lg border border-white/5 leading-relaxed mt-2">
+                      {lead.resumo_sinal}
+                    </p>
+                  )}
                 </div>
               ) : null}
 
-              {/* Canais Encontrados */}
-              <div className="bg-slate-950/40 p-4 rounded-2xl border border-white/5 space-y-2.5">
-                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2 flex items-center gap-1.5">
-                  <User size={11} className="text-yellow-400" /> Canais Encontrados
-                </h4>
-                {[
-                  { label: 'Telefone', value: phoneRaw || 'N/D' },
-                  { label: 'E-mail', value: lead.email || 'N/D' },
-                ].map(({ label, value }) => (
-                  <div key={label} className="flex items-center justify-between text-xs">
-                    <span className="text-slate-500">{label}</span>
-                    <span className="font-bold text-white truncate max-w-[200px]">{value}</span>
-                  </div>
-                ))}
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-500">Website</span>
-                  {lead.website && lead.website !== "N/D" ? (
-                    <a href={lead.website} target="_blank" rel="noreferrer" className="font-bold text-yellow-400 hover:underline flex items-center gap-1 truncate max-w-[200px]">
-                      {lead.website} <ExternalLink size={9} />
-                    </a>
-                  ) : <span className="font-bold text-slate-600">N/D</span>}
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-500">Perfil Social</span>
-                  {lead.social_url && lead.social_url !== "N/D" ? (
-                    <a href={lead.social_url} target="_blank" rel="noreferrer" className="font-bold text-yellow-400 hover:underline flex items-center gap-1 truncate max-w-[200px]">
-                      Instagram/Social <ExternalLink size={9} />
-                    </a>
-                  ) : <span className="font-bold text-slate-600">N/D</span>}
-                </div>
-              </div>
-
-              {/* Seção Premium de Origem do Lead */}
+              {/* ── Bloco 5: Origem do Lead ── */}
               {lead.link_fonte && lead.link_fonte !== "N/D" && (
-                <div className="bg-gradient-to-r from-blue-950/40 to-slate-950/60 p-4 rounded-2xl border border-blue-500/20 space-y-2 relative overflow-hidden group shrink-0">
-                  <div className="absolute top-0 right-0 w-16 h-16 bg-blue-500/5 rounded-full blur-xl pointer-events-none" />
-                  <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em] mb-1 flex items-center gap-1.5">
-                    <Globe size={12} className="text-blue-400" /> Origem do Alvo / Link de Captação
+                <div className="bg-gradient-to-r from-blue-950/40 to-slate-950/60 p-3 rounded-xl border border-blue-500/20 relative overflow-hidden group shrink-0">
+                  <div className="absolute top-0 right-0 w-14 h-14 bg-blue-500/5 rounded-full blur-xl pointer-events-none" />
+                  <h4 className="text-[9px] font-black text-blue-400 uppercase tracking-[0.2em] mb-1.5 flex items-center gap-1.5">
+                    <Globe size={10} className="text-blue-400" /> Origem do Lead
                   </h4>
-                  <p className="text-xs text-slate-400 leading-normal">
-                    Este lead foi capturado através do mapeamento de inteligência ativa da Otto.
+                  <p className="text-[11px] text-slate-400 leading-snug mb-2">
+                    Capturado via inteligência ativa da Otto.
                   </p>
                   <a
                     href={lead.link_fonte}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="mt-1 inline-flex items-center gap-2 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 hover:border-blue-500/50 text-blue-300 font-bold px-3 py-2 rounded-xl text-xs transition-all w-full justify-center group-hover:scale-[1.01]"
+                    className="inline-flex items-center gap-1.5 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 hover:border-blue-500/50 text-blue-300 font-bold px-3 py-1.5 rounded-lg text-[10px] transition-all group-hover:scale-[1.01]"
                   >
-                    Acessar Canal de Origem <ExternalLink size={12} />
+                    Acessar Canal de Origem <ExternalLink size={10} />
                   </a>
                 </div>
               )}
