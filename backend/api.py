@@ -1,0 +1,1113 @@
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Header, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+import os
+import json
+from concurrent.futures import ThreadPoolExecutor
+from src.engine.smart_enrichment import SmartEnrichment
+from src.utils.report_generator import ReportGenerator
+from src.utils.database import Database
+from src.utils.logger import logger
+from src.utils.usage_monitor import UsageMonitor
+from src.agents.manager_agent import ManagerAgent
+from src.agents.health_agent import HealthAgent
+from src.agents.extension_launcher import ExtensionLauncherAgent
+from src.agents.demand_scout_agent import DemandScoutAgent
+from src.agents.contact_miner import ContactMiner
+from src.utils.apify_client import ApifyClient, SEARCH_CONFIGS, get_import_stats, import_all_regions
+import threading
+import asyncio
+from datetime import datetime
+from typing import List, Optional
+
+app = FastAPI(title="Prospect-On API Server")
+db = Database()
+usage_monitor = UsageMonitor()
+manager = ManagerAgent()
+health_monitor = HealthAgent()
+extension_launcher = ExtensionLauncherAgent()
+demand_scout = DemandScoutAgent(headless=True)
+contact_miner = ContactMiner(db=db)
+apify_client = ApifyClient()
+executor = ThreadPoolExecutor(max_workers=4)
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("API Startup: Garantindo navegadores do Playwright instalados...")
+    import subprocess
+    import sys
+    
+    def install_playwright_background():
+        try:
+            logger.info("Background: Iniciando 'playwright install chromium'...")
+            # Roda de forma limpa sem bloquear o boot da API no Railway (evita timeout de deploy)
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=180
+            )
+            logger.info(f"Background: Instalação do Playwright Chromium concluída. stdout: {result.stdout}")
+            if result.stderr:
+                logger.warning(f"Background: Playwright stderr: {result.stderr}")
+        except Exception as ex:
+            logger.error(f"Background: Falha ao instalar navegadores do Playwright: {ex}")
+
+    threading.Thread(target=install_playwright_background, daemon=True).start()
+
+# Gerenciador de conexões WebSocket para Logs Ativos
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except:
+                pass
+
+manager_ws = ConnectionManager()
+manager.set_ws_manager(manager_ws) # Injetar o gerenciador no ManagerAgent
+
+# Configurar CORS para o Next.js
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Em produção, use a URL do frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Servir arquivos estáticos (Imagens, Vistorias, Reports)
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+vistorias_dir = os.path.join(static_dir, "vistorias")
+os.makedirs(vistorias_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# Legado: Servir imagens de dados
+images_dir = os.path.join(os.path.dirname(__file__), "data", "images")
+os.makedirs(images_dir, exist_ok=True)
+app.mount("/api/images", StaticFiles(directory=images_dir), name="images")
+
+# Modelos de Dados
+class LeadData(BaseModel):
+    name: str
+    address: str
+    phone: str = None
+    email: str = None
+    website: str = None
+    coords: dict = None
+
+
+class InteractionData(BaseModel):
+    notes: str = ""
+    return_date: Optional[str] = None
+    contact_status: str = 'Aguardando Abordagem'
+    email_sent_at: Optional[str] = None
+    vision_image_url: Optional[str] = None
+
+class FavoriteData(BaseModel):
+    is_favorite: bool
+
+class UserLoginSchema(BaseModel):
+    email: str
+    password: str
+
+class UserProfileUpdateSchema(BaseModel):
+    name: str
+    phone: str = None
+    document: str = None
+    password: str = None
+
+class UserCreateSchema(BaseModel):
+    email: str
+    password: str
+    name: str
+    role: str
+    phone: str = None
+    document: str = None
+
+class ImportLeadItem(BaseModel):
+    """
+    Modelo flexível para importação de leads de extensões de navegador.
+    Aceita campos de G Maps Extractor, Instant Data Scraper, Outscraper, etc.
+    """
+    # Campos principais (vários nomes possíveis)
+    name: str = None
+    title: str = None                  # G Maps Extractor usa 'title'
+    business_name: str = None          # Outscraper
+    address: str = None
+    full_address: str = None           # Outscraper
+    vicinity: str = None               # Google Places API
+    phone: str = None
+    phone_number: str = None           # G Maps Extractor
+    phone_1: str = None                # Outscraper
+    email: str = None
+    email_1: str = None                # Outscraper
+    website: str = None
+    site: str = None
+    url: str = None
+    rating: float = None
+    reviews_count: int = None
+    user_ratings_total: int = None
+    category: str = None
+    categories: str = None
+    lat: float = None
+    latitude: float = None
+    lng: float = None
+    longitude: float = None
+    place_id: str = None
+
+class ImportBatch(BaseModel):
+    leads: list[ImportLeadItem]
+
+# Instanciar Motores
+enricher = SmartEnrichment()
+report_gen = ReportGenerator()
+
+@app.get("/")
+async def root():
+    return {"status": "Prospect-On API is running"}
+
+@app.post("/api/analyze-lead")
+async def analyze_lead(lead: LeadData):
+    try:
+        # Converter Pydantic para Dict
+        lead_dict = lead.model_dump()
+        logger.info(f"API: Recebido analyze-lead para {lead_dict.get('name')}")
+        
+        # 1. Enriquecer (Street View + Satellite + Vision + ROI + Proposta)
+        enriched_lead = enricher.enrich_lead(lead_dict)
+        if not enriched_lead or not isinstance(enriched_lead, dict):
+            logger.error("API: enrich_lead retornou um valor inválido (None ou não-dict)")
+            enriched_lead = lead_dict # Fallback para os dados originais se falhar
+
+        logger.info(f"API: Enriquecimento concluído para {enriched_lead.get('name')}")
+        
+        # 2. Gerar Relatório PDF
+        try:
+            report_path = report_gen.generate_valuation_report(enriched_lead)
+            logger.info(f"API: Relatório gerado em {report_path}")
+        except Exception as e:
+            logger.error(f"API: Falha ao gerar relatório: {e}")
+            report_path = "reports/erro_geracao.pdf"
+        
+        # 3. Sincronizar com Banco de Dados (v4.0 SQL Level)
+        try:
+            db.upsert_lead(enriched_lead)
+            logger.info("API: Lead sincronizado no DB")
+        except Exception as e:
+            logger.error(f"API: Falha ao sincronizar DB: {e}")
+        
+        # 4. Converter caminhos de imagem para URLs acessíveis (Sincronizado v7.1)
+        port = "8002"
+        base_url = f"http://localhost:{port}"
+        
+        # Processar imagens estáticas novas (/static/vistorias)
+        if enriched_lead.get('vision_image_url') and enriched_lead['vision_image_url'].startswith('/static'):
+            enriched_lead['vision_image_url'] = f"{base_url}{enriched_lead['vision_image_url']}"
+        
+        # Processar imagens legadas (/api/images)
+        for key in ['vision_image_path', 'satellite_image_path', 'location_map_path', 'facade_image_path']:
+            path = enriched_lead.get(key)
+            if path:
+                filename = os.path.basename(path)
+                url = f"{base_url}/api/images/{filename}"
+                enriched_lead[key.replace('_path', '_url')] = url
+                
+                # Sincronização v3.0
+                if key in ['vision_image_path', 'facade_image_path']:
+                    enriched_lead['vision_image_url'] = url
+
+        return {
+            "success": True,
+            "lead": enriched_lead,
+            "report_url": f"{base_url}/api/reports/{os.path.basename(report_path)}"
+        }
+    except Exception as e:
+        logger.error(f"API: Erro crítico no motor 3.0: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Erro no Motor 3.0: {str(e)}")
+
+@app.post("/api/auth/login")
+async def auth_login(data: UserLoginSchema):
+    user = db.get_user_by_email(data.email)
+    if not user or user["password"] != data.password:
+        raise HTTPException(status_code=401, detail="E-mail ou senha incorretos")
+    return {
+        "success": True,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "name": user["name"],
+            "role": user["role"],
+            "phone": user.get("phone", ""),
+            "document": user.get("document", "")
+        }
+    }
+
+@app.get("/api/users/profile")
+async def get_user_profile(x_user_id: str = Header(None)):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Não autorizado")
+    try:
+        user_id = int(x_user_id)
+        user = db.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+        return user
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID de usuário inválido")
+
+@app.put("/api/users/profile")
+async def update_user_profile(data: UserProfileUpdateSchema, x_user_id: str = Header(None)):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Não autorizado")
+    try:
+        user_id = int(x_user_id)
+        success = db.update_user_profile(user_id, data.name, data.phone, data.document, data.password)
+        if success:
+            updated_user = db.get_user_by_id(user_id)
+            return {"success": True, "user": updated_user}
+        raise HTTPException(status_code=500, detail="Erro ao atualizar perfil")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID de usuário inválido")
+
+# Rotas Administrativas
+@app.get("/api/admin/users")
+async def get_admin_users(x_user_id: str = Header(None)):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Não autorizado")
+    try:
+        caller = db.get_user_by_id(int(x_user_id))
+        if not caller or caller["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Acesso negado")
+        return db.get_all_users()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID de usuário inválido")
+
+@app.post("/api/admin/users")
+async def admin_create_user(data: UserCreateSchema, x_user_id: str = Header(None)):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Não autorizado")
+    try:
+        caller = db.get_user_by_id(int(x_user_id))
+        if not caller or caller["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Acesso negado")
+        
+        existing = db.get_user_by_email(data.email)
+        if existing:
+            raise HTTPException(status_code=400, detail="E-mail já cadastrado")
+        
+        user_id = db.create_user(data.email, data.password, data.name, data.role, data.phone, data.document)
+        if user_id:
+            return {"success": True, "id": user_id, "message": "Vendedor criado com sucesso!"}
+        raise HTTPException(status_code=500, detail="Erro ao criar vendedor")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID de usuário inválido")
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(user_id: int, x_user_id: str = Header(None)):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Não autorizado")
+    try:
+        caller = db.get_user_by_id(int(x_user_id))
+        if not caller or caller["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Acesso negado")
+        
+        if caller["id"] == user_id:
+            raise HTTPException(status_code=400, detail="Você não pode excluir o seu próprio usuário administrador")
+        
+        success = db.delete_user(user_id)
+        if success:
+            return {"success": True, "message": "Vendedor excluído com sucesso!"}
+        raise HTTPException(status_code=500, detail="Erro ao excluir vendedor")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID de usuário inválido")
+
+@app.get("/api/admin/users/{user_id}/leads-quentes")
+async def get_seller_leads_quentes(user_id: int, x_user_id: str = Header(None)):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Não autorizado")
+    try:
+        caller = db.get_user_by_id(int(x_user_id))
+        if not caller or caller["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Acesso negado")
+        
+        leads = db.get_all_leads_quentes(user_id=user_id)
+        port = "8002"
+        base_url = f"http://localhost:{port}"
+        for lead in leads:
+            if lead.get('vision_image_url') and lead['vision_image_url'].startswith('/static'):
+                lead['vision_image_url'] = f"{base_url}{lead['vision_image_url']}"
+        return leads
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID de usuário inválido")
+
+# Rotas de Leads com Isolamento
+@app.get("/api/leads")
+async def get_leads(x_user_id: str = Header(None)):
+    try:
+        user_id = int(x_user_id) if x_user_id else None
+        leads = db.get_all_leads(user_id=user_id)
+        port = "8002"
+        base_url = f"http://localhost:{port}"
+        
+        # Converter URLs relativas para absolutas para o frontend
+        for lead in leads:
+            if lead.get('vision_image_url') and lead['vision_image_url'].startswith('/static'):
+                lead['vision_image_url'] = f"{base_url}{lead['vision_image_url']}"
+        
+        return leads
+    except Exception as e:
+        logger.error(f"Erro ao buscar leads no DB: {e}")
+        return []
+
+@app.get("/api/leads-quentes")
+async def get_leads_quentes(x_user_id: str = Header(None)):
+    try:
+        user_id = int(x_user_id) if x_user_id else None
+        leads = db.get_all_leads_quentes(user_id=user_id)
+        port = "8002"
+        base_url = f"http://localhost:{port}"
+        
+        # Converter URLs relativas para absolutas para o frontend
+        for lead in leads:
+            if lead.get('vision_image_url') and lead['vision_image_url'].startswith('/static'):
+                lead['vision_image_url'] = f"{base_url}{lead['vision_image_url']}"
+        
+        return leads
+    except Exception as e:
+        logger.error(f"Erro ao buscar leads quentes no DB: {e}")
+        return []
+
+@app.get("/api/leads/by-slug/{slug}")
+async def get_lead_by_slug(slug: str):
+    """Busca um lead pelo slug (nome sanitizado)."""
+    try:
+        leads = db.get_all_leads()
+        # Helper simples para encontrar por slug
+        def to_slug(text):
+            import unicodedata
+            import re
+            text = unicodedata.normalize('NFD', text).encode('ascii', 'ignore').decode('utf-8')
+            return re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')
+
+        for lead in leads:
+            if to_slug(lead.get('name', '')) == slug:
+                return lead
+        
+        raise HTTPException(status_code=404, detail="Condomínio não encontrado")
+    except Exception as e:
+        logger.error(f"Erro ao buscar lead por slug {slug}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/leads/{lead_id}/interaction")
+async def save_lead_interaction(lead_id: str, data: InteractionData, x_user_id: str = Header(None)):
+    """Salva a interação com o lead (anotações, retorno, status, data de email e URL de fachada) isolando por usuário."""
+    try:
+        user_id = int(x_user_id) if x_user_id else None
+        logger.info(f"API: Salvando interação comercial para lead_id={lead_id} | Status: {data.contact_status} | User: {user_id}")
+        success = db.save_interaction(lead_id, data.notes, data.return_date, data.contact_status, data.email_sent_at, data.vision_image_url, user_id=user_id)
+        if success:
+            return {"success": True, "message": "Interação comercial salva com sucesso."}
+        else:
+            raise HTTPException(status_code=500, detail="Erro ao salvar interação no banco de dados.")
+    except Exception as e:
+        logger.error(f"API: Erro ao salvar interação: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/leads/{lead_id}/favorite")
+async def toggle_lead_favorite(lead_id: str, data: FavoriteData, x_user_id: str = Header(None)):
+    """Marca ou desmarca um lead como favorito (Leads Quentes) isolando por usuário."""
+    try:
+        user_id = int(x_user_id) if x_user_id else 1
+        logger.info(f"API: Alternando favorito para lead_id={lead_id} para {data.is_favorite} | User: {user_id}")
+        success = db.toggle_favorite(lead_id, data.is_favorite, user_id=user_id)
+        if success:
+            return {"success": True, "message": "Estado do favorito atualizado."}
+        else:
+            raise HTTPException(status_code=500, detail="Erro ao alternar favorito no banco de dados.")
+    except ValueError as ve:
+        logger.warning(f"API: Bloqueio de favorito para lead_id={lead_id}: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"API: Erro ao alternar favorito: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/leads/import")
+async def import_leads(batch: ImportBatch):
+    """
+    Importa leads em lote vindos de extensões de navegador (CSV/JSON).
+    Normaliza automaticamente campos de G Maps Extractor, Outscraper, Instant Data Scraper, etc.
+    """
+    def normalize(item: ImportLeadItem) -> dict:
+        """Normaliza um item de qualquer extensão para o formato interno do sistema."""
+        # Nome do negócio (diferentes extensões usam campos diferentes)
+        name = (item.name or item.title or item.business_name or "").strip()
+        if not name:
+            return None
+
+        # Endereço
+        address = (item.address or item.full_address or item.vicinity or "").strip()
+
+        # Telefone
+        phone = (item.phone or item.phone_number or item.phone_1 or "N/D").strip()
+
+        # E-mail
+        email = (item.email or item.email_1 or "N/D").strip()
+
+        # Website
+        website = (item.website or item.site or item.url or "N/D").strip()
+
+        # Coordenadas
+        lat = item.lat or item.latitude or 0.0
+        lng = item.lng or item.longitude or 0.0
+
+        # Categoria
+        category = (item.category or item.categories or "Condomínio").strip()
+
+        return {
+            "name": name,
+            "address": address,
+            "phone": phone if phone else "N/D",
+            "email": email if email else "N/D",
+            "website": website if website else "N/D",
+            "rating": item.rating or 0.0,
+            "user_ratings_total": item.user_ratings_total or item.reviews_count or 0,
+            "category": category,
+            "coords": {"lat": lat, "lng": lng} if (lat or lng) else None,
+            "lat": lat,
+            "lng": lng,
+            "place_id": item.place_id or "",
+            "source": "Importação Manual (Extensão)",
+            "score": 5.0,
+            "contact_status": "Aguardando Abordagem",
+        }
+
+    imported = 0
+    skipped = 0
+    errors = 0
+
+    for item in batch.leads:
+        try:
+            lead_dict = normalize(item)
+            if not lead_dict:
+                skipped += 1
+                continue
+            db.upsert_lead(lead_dict)
+            imported += 1
+        except Exception as e:
+            logger.error(f"Erro ao importar lead: {e}")
+            errors += 1
+
+    logger.info(f"Importação concluída: {imported} importados, {skipped} ignorados, {errors} erros")
+    return {
+        "success": True,
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors,
+        "message": f"{imported} lead(s) importado(s) com sucesso!"
+    }
+
+@app.post("/api/leads/clear")
+
+async def clear_leads():
+    """Limpa todos os leads do banco de dados."""
+    try:
+        success = db.clear_all_leads()
+        if success:
+            return {"success": True, "message": "Banco de dados limpo."}
+        else:
+            raise HTTPException(status_code=500, detail="Erro ao limpar banco de dados.")
+    except Exception as e:
+        logger.error(f"API: Erro ao limpar leads: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/scan/start")
+async def start_scan(query: str = "Condominios", city: str = "São Paulo", target: int = 1, publico_alvo: str = None, palavra_chave: str = None, pilares: str = "A,B,C"):
+    """Dispara a varredura completa Sniper (Discovery + Enrichment) em background."""
+    try:
+        logger.info(f"API: Disparando varredura Sniper para {query} em {city} (Objetivo: {target}) | Público: {publico_alvo} | Palavra: {palavra_chave} | Pilares: {pilares}...")
+        
+        async def trigger():
+            await manager.run_full_scan(query, city, target_leads=target, publico_alvo=publico_alvo, palavra_chave=palavra_chave, pilares=pilares)
+            
+        asyncio.create_task(trigger())
+        return {"success": True, "message": f"Varredura Sniper iniciada para {query} em {city}. Objetivo: {target} lead(s)."}
+    except Exception as e:
+        logger.error(f"Erro ao iniciar varredura: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/sniper/start")
+async def start_sniper_scan(query: str = "Condominios", city: str = "São Paulo", publico_alvo: str = None, palavra_chave: str = None, pilares: str = "A,B,C"):
+    """Dispara a varredura Sniper (Google Maps Browser). Agora unificado com o scan principal."""
+    return await start_scan(query, city, publico_alvo=publico_alvo, palavra_chave=palavra_chave, pilares=pilares)
+
+@app.post("/api/leads/{lead_id}/crm")
+async def send_lead_to_crm(lead_id: str):
+    """Simula a integração comercial e envio do lead para o CRM externo."""
+    try:
+        logger.info(f"API: Solicitando integração CRM para lead_id={lead_id}")
+        
+        # 1. Buscar lead no DB
+        leads = db.get_all_leads()
+        lead = None
+        for l in leads:
+            if l.get("id") == lead_id:
+                lead = l
+                break
+        
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead não encontrado para envio ao CRM.")
+            
+        # 2. Atualizar notas locais com informações do CRM e status para "Contato Iniciado"
+        current_time = datetime.now().strftime("%d/%m/%Y %H:%M")
+        
+        # Incrementar as notas de interação
+        existing_notes = lead.get("interaction_notes") or ""
+        new_notes = f"{existing_notes}\n[{current_time}] [CRM-SINC]: Lead integrado com sucesso ao CRM comercial."
+        new_notes = new_notes.strip()
+        
+        # Salvar a data no banco e alterar status para 'Contato Iniciado'
+        success = db.save_interaction(
+            lead_id=lead_id,
+            notes=new_notes,
+            return_date=lead.get("return_date"),
+            contact_status="Contato Iniciado",
+            email_sent_at=lead.get("email_sent_at") or current_time,
+            vision_image_url=lead.get("vision_image_url")
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Falha ao salvar dados de integração no Banco de Dados.")
+            
+        return {
+            "success": True, 
+            "message": f"Lead '{lead.get('name')}' integrado com sucesso ao CRM comercial externo!",
+            "integrated_at": current_time,
+            "new_status": "Contato Iniciado"
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"API: Erro ao enviar lead {lead_id} ao CRM: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/scan/extension")
+async def start_extension_scan(query: str = "Condominios", city: str = "São Paulo"):
+    """Lança o navegador com a extensão Sniper carregada para busca ultra-rápida."""
+    try:
+        full_query = f"{query} em {city}"
+        logger.info(f"API: Lançando navegador com extensão para: {full_query}")
+        
+        # Rodar o launcher em uma thread separada para não bloquear a API
+        def run_launcher():
+            asyncio.run(extension_launcher.launch(full_query))
+            
+        threading.Thread(target=run_launcher, daemon=True).start()
+        
+        return {"success": True, "message": "Navegador Sniper aberto com a extensão carregada."}
+    except Exception as e:
+        logger.error(f"Erro ao lançar extensão: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "data", "system_config.json")
+
+def load_system_config():
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Erro ao ler system_config.json: {e}")
+    return {
+        "limite_leads": 50,
+        "cidade_base": "São Paulo, SP",
+        "motor_busca": "Google Search (Playwright Stealth)",
+        "motor_mapas": "Google Maps (Playwright Stealth)",
+        "motor_ia": "DeepSeek Chat",
+        "delay_stealth": "2.0s – 3.5s (aleatório)",
+        "pilares_ativos": "A (Condomínios) · B (Obras de Grande Porte)",
+        "pilar_varredura": "Todos"
+    }
+
+def save_system_config(config_data):
+    try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, ensure_ascii=False, indent=4)
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao salvar system_config.json: {e}")
+        return False
+
+class SystemConfigSchema(BaseModel):
+    limite_leads: int
+    cidade_base: str
+    pilar_varredura: str = "Todos"
+
+@app.get("/api/configuracoes")
+async def get_configuracoes():
+    try:
+        return load_system_config()
+    except Exception as e:
+        logger.error(f"Erro ao buscar configurações: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/configuracoes")
+async def post_configuracoes(config: SystemConfigSchema):
+    try:
+        current = load_system_config()
+        current.update(config.model_dump())
+        success = save_system_config(current)
+        if success:
+            return {"success": True, "config": current}
+        raise HTTPException(status_code=500, detail="Erro ao salvar arquivo de configurações.")
+    except Exception as e:
+        logger.error(f"Erro ao salvar configurações: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/health")
+async def health_check():
+    """Healthcheck simples para Railway."""
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+
+@app.get("/api/system/health")
+async def get_health():
+    """Retorna o status de saúde de todas as APIs e serviços."""
+    try:
+        report = health_monitor.get_system_health()
+        report["timestamp"] = datetime.now().isoformat()
+        return report
+    except Exception as e:
+        logger.error(f"Erro no monitor de saúde: {e}")
+        return {"status": "Error", "message": str(e)}
+
+@app.get("/api/usage")
+async def get_usage():
+    """Retorna estatísticas de consumo de IA."""
+    try:
+        return usage_monitor.get_all_stats()
+    except Exception as e:
+        logger.error(f"Erro ao buscar uso: {e}")
+        return []
+
+@app.get("/api/reports/{filename}")
+async def get_report(filename: str):
+    file_path = os.path.join("reports", filename)
+    if os.path.exists(file_path):
+        return FileResponse(
+            file_path, 
+            media_type="application/pdf", 
+            filename=filename,
+            headers={"Access-Control-Allow-Origin": "*", "Cross-Origin-Resource-Policy": "cross-origin"}
+        )
+    raise HTTPException(status_code=404, detail="Relatório não encontrado")
+
+@app.get("/api/images/{filename}")
+async def get_image(filename: str):
+    """Serviço de imagens com Bypass de ORB/CORS (v6.1 Clean)."""
+    file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "data", "images", filename))
+    if os.path.exists(file_path):
+        return FileResponse(
+            file_path, 
+            media_type="image/jpeg", 
+            headers={"Access-Control-Allow-Origin": "*", "Cross-Origin-Resource-Policy": "cross-origin"}
+        )
+    raise HTTPException(status_code=404, detail="Imagem não encontrada")
+
+@app.get("/api/scan-pillars")
+async def scan_pillars(city: str = "São Paulo", pilares: str = "A,B,C", x_user_id: str = Header(None)):
+    """
+    Varredura completa de demanda nos 3 Pilares (A/B/C) em paralelo.
+    
+    Pilar A — Condomínios (cotações ativas de pintura no GetNinjas)
+    Pilar B — Obras de Grande Porte (shoppings, hospitais, indústrias no oHub)
+    Pilar C — Editais Públicos (licitações de pintura predial — PNCP, DOE-SP)
+
+    Retorna leads organizados por pilar com metadados visuais para o frontend.
+    """
+    try:
+        # Identificar usuário
+        user = None
+        if x_user_id:
+            try:
+                user = db.get_user_by_id(int(x_user_id))
+            except:
+                user = db.get_user_by_email(x_user_id)
+        
+        logger.info(f"API: 🔍 Iniciando varredura de Pilares para '{city}' com pilares='{pilares}'...")
+        result = await demand_scout.scan_all_pillars(city, pilares=pilares)
+        logger.info(
+            f"API: ✅ Varredura de Pilares concluída — {result['total_leads']} leads "
+            f"(A={len(result['pilares']['A']['leads'])} "
+            f"B={len(result['pilares']['B']['leads'])})"
+        )
+        
+        # Salvar cada lead no banco de dados
+        for pilar_key in ["A", "B"]:
+            for lead in result["pilares"][pilar_key]["leads"]:
+                try:
+                    db.upsert_lead({
+                        "name": lead.get("nome", ""),
+                        "address": lead.get("endereco", ""),
+                        "phone": lead.get("telefone", "N/D"),
+                        "email": lead.get("email", "N/D"),
+                        "website": lead.get("site", ""),
+                        "score": lead.get("score_urgencia", 5),
+                        "source": f"Pilar {pilar_key} (Scan Direto)",
+                        "justification": lead.get("resumo", ""),
+                        "category": lead.get("tag", "pintura_fachada"),
+                        "urgency_score": lead.get("score_urgencia", 5),
+                        "contact_status": "Aguardando Abordagem",
+                        "pilar": pilar_key,
+                        "link_fonte": lead.get("link_fonte", ""),
+                    })
+                except Exception as e:
+                    logger.warning(f"API: Erro ao salvar lead '{lead.get('nome')}' no DB: {e}")
+        
+        # Salvar no histórico
+        if user:
+            db.save_search_history(
+                user_id=user['id'],
+                user_name=user.get('name', 'N/D'),
+                user_email=user.get('email', 'N/D'),
+                city=city,
+                pilares=pilares,
+                total_leads=result['total_leads'],
+                leads_a=len(result['pilares']['A']['leads']),
+                leads_b=len(result['pilares']['B']['leads']),
+                leads_c=0,
+                leads_json=result
+            )
+        
+        return {"success": True, **result}
+    except Exception as e:
+        logger.error(f"API: Erro na varredura de Pilares: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/search-history")
+async def get_search_history(x_user_id: str = Header(None)):
+    """
+    Retorna o histórico de buscas do usuário autenticado (ou todas se admin).
+    """
+    try:
+        if not x_user_id:
+            raise HTTPException(status_code=401, detail="Usuário não autenticado")
+        
+        try:
+            user = db.get_user_by_id(int(x_user_id))
+        except:
+            user = db.get_user_by_email(x_user_id)
+        
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuário não encontrado")
+        
+        # Admin vê tudo, vendedor vê só as próprias buscas
+        if user.get('role') == 'admin':
+            history = db.get_search_history()
+        else:
+            history = db.get_search_history(user_id=user['id'])
+        
+        return {"success": True, "history": history, "user": {"id": user['id'], "name": user.get('name'), "email": user.get('email')}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"API: Erro ao buscar histórico: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/search-history/{entry_id}")
+async def delete_search_history(entry_id: int, x_user_id: str = Header(None)):
+    """Deleta uma entrada do histórico de buscas."""
+    try:
+        if not x_user_id:
+            raise HTTPException(status_code=401, detail="Não autenticado")
+        try:
+            user = db.get_user_by_id(int(x_user_id))
+        except:
+            user = db.get_user_by_email(x_user_id)
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuário não encontrado")
+        
+        success = db.delete_search_history(entry_id, user_id=user['id'] if user['role'] != 'admin' else None)
+        if success:
+            return {"success": True, "message": "Entrada removida"}
+        raise HTTPException(status_code=404, detail="Entrada não encontrada ou sem permissão")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"API: Erro ao deletar histórico: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/leads/{lead_id}")
+async def delete_lead(lead_id: str, x_user_id: str = Header(None)):
+    """Deleta um lead do banco de dados."""
+    try:
+        success = db.delete_lead(lead_id)
+        if success:
+            return {"success": True, "message": "Lead removido"}
+        raise HTTPException(status_code=404, detail="Lead não encontrado")
+    except Exception as e:
+        logger.error(f"API: Erro ao deletar lead {lead_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/contacts/search")
+async def search_contacts(city: str = "São Paulo", type: str = "administrators", x_user_id: str = Header(None)):
+    """
+    Garimpa contatos de administradoras de condomínio e síndicos profissionais.
+    
+    type: "administrators" (administradoras) ou "syndics" (síndicos)
+    """
+    try:
+        logger.info(f"API: Garimpando contatos tipo '{type}' em '{city}'...")
+        
+        if type == "administrators":
+            results = await contact_miner.mine_administrators(city, limit=5)
+        elif type == "syndics":
+            results = await contact_miner.mine_syndics(city, limit=5)
+        else:
+            admins = await contact_miner.mine_administrators(city, limit=3)
+            syndics = await contact_miner.mine_syndics(city, limit=3)
+            results = admins + syndics
+        
+        return {"success": True, "contacts": results, "total": len(results)}
+    except Exception as e:
+        logger.error(f"API: Erro ao garimpar contatos: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/apify/stats")
+async def apify_stats():
+    """Retorna estatísticas da importação Apify."""
+    stats = get_import_stats()
+    leads_count = len(db.get_all_leads())
+    return {"success": True, "import_stats": stats, "current_leads": leads_count}
+
+
+@app.post("/api/apify/import")
+async def apify_import(city: str = "all", categories: str = "all", max_per: int = 200, x_user_id: str = Header(None)):
+    """
+    Importa leads do Google Maps via Apify para todas as regiões (executa em background).
+
+    max_per: Máximo de resultados por categoria (padrão 200)
+    """
+    logger.info(f"API: Iniciando importação Apify para todas as regiões...")
+
+    def run_import_blocking():
+        token = os.getenv("APIFY_API_TOKEN", "")
+        if not token:
+            logger.error("API Apify: APIFY_API_TOKEN não configurado")
+            return
+
+        result = import_all_regions(
+            token=token,
+            db=db,
+            max_per_category=max_per,
+        )
+        logger.info(f"API Apify: {result['imported']} importados, {result['skipped']} ignorados")
+
+    executor.submit(run_import_blocking)
+
+    stats = get_import_stats()
+    return {
+        "success": True,
+        "message": f"Importação iniciada para {stats['regions']} regiões x {stats['categories']} categorias. Estimativa: ~{stats['estimated_leads']} leads.",
+        "stats": stats,
+    }
+
+@app.put("/api/leads/{lead_id}/crm-notes")
+async def update_crm_notes(lead_id: str, request: Request, x_user_id: str = Header(None)):
+    """Salva notas do CRM e resposta do admin."""
+    try:
+        body = await request.json()
+        notes = body.get("crm_notes", "")
+        response = body.get("crm_response", "")
+        uid = int(x_user_id) if x_user_id else None
+        db.update_crm_notes(lead_id, notes, response, user_id=uid)
+        return {"success": True, "message": "CRM atualizado"}
+    except Exception as e:
+        logger.error(f"API: Erro CRM: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/leads/{lead_id}/messages")
+async def get_lead_messages(lead_id: str, request: Request, x_user_id: str = Header(None)):
+    """Retorna mensagens do chat do lead e marca como lidas."""
+    try:
+        uid = int(x_user_id) if x_user_id else None
+        messages = db.get_lead_messages(lead_id, user_id=uid)
+        return {"success": True, "messages": messages}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/leads/{lead_id}/messages")
+async def send_lead_message(lead_id: str, request: Request, x_user_id: str = Header(None)):
+    """Envia uma mensagem no chat do lead."""
+    try:
+        body = await request.json()
+        message = body.get("message", "").strip()
+        user_name = body.get("user_name", "")
+        if not message:
+            raise HTTPException(status_code=400, detail="Mensagem vazia")
+        uid = int(x_user_id) if x_user_id else None
+        if not uid:
+            raise HTTPException(status_code=401, detail="User ID obrigatorio")
+        db.send_lead_message(lead_id, uid, user_name, message)
+        return {"success": True, "message": "Enviada"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/leads/{lead_id}/messages/{message_id}")
+async def delete_lead_message(lead_id: str, message_id: int, x_user_id: str = Header(None)):
+    """Deleta uma mensagem (somente a propria)."""
+    try:
+        uid = int(x_user_id) if x_user_id else None
+        if not uid:
+            raise HTTPException(status_code=401)
+        db.delete_lead_message(message_id, uid)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/messages/unread")
+async def count_unread_messages(x_user_id: str = Header(None)):
+    """Contagem de mensagens nao lidas para o usuario."""
+    try:
+        uid = int(x_user_id) if x_user_id else None
+        if not uid:
+            return {"success": True, "unread": 0}
+        user = db.get_user_by_id(uid)
+        role = user.get("role", "vendedor") if user else "vendedor"
+        count = db.count_unread_messages(uid, role)
+        return {"success": True, "unread": count}
+    except Exception as e:
+        return {"success": True, "unread": 0}
+
+@app.get("/api/admin/pending-responses")
+async def get_pending_responses(x_user_id: str = Header(None)):
+    """Retorna contagem de leads com notas pendentes de resposta."""
+    try:
+        if not x_user_id:
+            raise HTTPException(status_code=401)
+        user = db.get_user_by_id(int(x_user_id))
+        if not user or user['role'] != 'admin':
+            raise HTTPException(status_code=403)
+        count = db.count_pending_crm()
+        return {"success": True, "pending": count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"success": True, "pending": 0}
+
+@app.websocket("/ws/logs")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager_ws.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text() # Manter conexão aberta
+    except WebSocketDisconnect:
+        manager_ws.disconnect(websocket)
+
+# ── Documentos / Arquivos ──
+import os
+import shutil
+from fastapi.responses import FileResponse
+from fastapi import UploadFile, File as FastAPIFile
+
+DOCS_DIR = os.path.join(os.path.dirname(__file__), "static", "documentos")
+
+@app.get("/api/documents")
+async def list_documents(request: Request):
+    """Lista todos os documentos da pasta."""
+    try:
+        if not os.path.exists(DOCS_DIR):
+            os.makedirs(DOCS_DIR, exist_ok=True)
+            return []
+        files = []
+        base_url = str(request.base_url).rstrip('/')
+        for f in os.listdir(DOCS_DIR):
+            fp = os.path.join(DOCS_DIR, f)
+            if os.path.isfile(fp):
+                stat = os.stat(fp)
+                files.append({
+                    "name": f,
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                    "url": f"{base_url}/static/documentos/{f}",
+                })
+        files.sort(key=lambda x: x["modified"], reverse=True)
+        return files
+    except Exception as e:
+        logger.error(f"API: Erro ao listar documentos: {e}")
+        return []
+
+@app.post("/api/documents/upload")
+async def upload_document(request: Request, x_user_id: str = Header(None)):
+    """Upload de documento (admin only)."""
+    try:
+        uid = int(x_user_id) if x_user_id else None
+        if not uid:
+            raise HTTPException(status_code=401)
+        user = db.get_user_by_id(uid)
+        if not user or user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Somente administradores")
+
+        form = await request.form()
+        file = form.get("file")
+        if not file:
+            raise HTTPException(status_code=400, detail="Nenhum arquivo enviado")
+
+        if not os.path.exists(DOCS_DIR):
+            os.makedirs(DOCS_DIR, exist_ok=True)
+
+        filename = file.filename
+        filepath = os.path.join(DOCS_DIR, filename)
+        with open(filepath, "wb") as f:
+            content = await file.read()
+            f.write(content)
+
+        return {"success": True, "message": f"Arquivo '{filename}' enviado"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"API: Erro upload documento: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/documents/{filename}")
+async def delete_document(filename: str, x_user_id: str = Header(None)):
+    """Deleta um documento (admin only)."""
+    try:
+        uid = int(x_user_id) if x_user_id else None
+        if not uid:
+            raise HTTPException(status_code=401)
+        user = db.get_user_by_id(uid)
+        if not user or user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Somente administradores")
+
+        filepath = os.path.join(DOCS_DIR, filename)
+        if not os.path.exists(filepath):
+            raise HTTPException(status_code=404, detail="Arquivo nao encontrado")
+
+        os.remove(filepath)
+        return {"success": True, "message": f"Arquivo '{filename}' removido"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"API: Erro deletar documento: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8002)

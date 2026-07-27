@@ -1,0 +1,25 @@
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+env/
+.env
+
+# Database
+backend/data/*.db
+backend/data/*.sqlite3
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+frontend/public/AquivosOtto/

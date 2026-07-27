@@ -1,0 +1,13 @@
+{
+  "name": "prospect-on-root",
+  "version": "3.0.0",
+  "description": "Root package for deployment",
+  "scripts": {
+    "postinstall": "cd frontend && npm install && cd ../backend && pip3 install -r requirements.txt",
+    "build": "cd frontend && npm run build",
+    "start": "concurrently \"cd backend && python3 -m uvicorn api:app --host 0.0.0.0 --port 8002\" \"cd frontend && npm start\""
+  },
+  "dependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

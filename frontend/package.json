@@ -1,0 +1,38 @@
+{
+  "name": "otto-pinturas-frontend",
+  "version": "3.2.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "16.2.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "framer-motion": "^12.0.0",
+    "lucide-react": "^0.469.0",
+    "leaflet": "^1.9.4",
+    "react-leaflet": "^4.2.1",
+    "jspdf": "^2.5.2",
+    "html2canvas": "^1.4.1",
+    "tailwind-merge": "^2.5.5",
+    "clsx": "^2.1.1",
+    "zod": "^3.25.67",
+    "dompurify": "^3.2.6"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/leaflet": "^1.9.8",
+    "tailwindcss": "^3.4.17",
+    "postcss": "^8.5.6",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.1",
+    "typescript-eslint": "^8.32.0"
+  }
+}
