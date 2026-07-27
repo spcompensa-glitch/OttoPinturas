@@ -7,8 +7,10 @@ const nextConfig: NextConfig = {
     unoptimized: true,
   },
   async rewrites() {
-    const backendUrl = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8002";
-    // Remover a barra final, se houver
+    let backendUrl = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8002";
+    if (!backendUrl.startsWith("http://") && !backendUrl.startsWith("https://")) {
+      backendUrl = `https://${backendUrl}`;
+    }
     const targetUrl = backendUrl.replace(/\/$/, "");
     return [
       {
