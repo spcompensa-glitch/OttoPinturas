@@ -23,3 +23,10 @@ backend/data/*.sqlite3
 Thumbs.db
 
 frontend/public/AquivosOtto/
+
+backend/static/vistorias/
+backend/static/screenshots/
+backend/*.png
+backend/*.log
+backend/server.log
+backend/backend_clean.log
