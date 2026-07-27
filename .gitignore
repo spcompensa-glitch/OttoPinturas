@@ -22,11 +22,14 @@ backend/data/*.sqlite3
 .DS_Store
 Thumbs.db
 
-frontend/public/AquivosOtto/
+# Heavy static files (PDFs, portfolio photos)
+frontend/public/AquivosOtto/documentos/
+frontend/public/AquivosOtto/Portfólio Completo/
+frontend/public/AquivosOtto/Carrocel/
 
+# Backend generated images
 backend/static/vistorias/
 backend/static/screenshots/
 backend/*.png
-backend/*.log
 backend/server.log
 backend/backend_clean.log
