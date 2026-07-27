@@ -41,7 +41,7 @@ class Database:
                 parsed = urllib.parse.urlparse(db_url)
                 qs = dict(urllib.parse.parse_qsl(parsed.query))
                 if 'sslmode' not in qs:
-                    qs['sslmode'] = 'disable'
+                    qs['sslmode'] = 'require'
                 qs['connect_timeout'] = '10'
                 new_query = urllib.parse.urlencode(qs)
                 pg_url = urllib.parse.urlunparse(parsed._replace(query=new_query))
@@ -50,9 +50,11 @@ class Database:
                 logger.info("DB: Conectado ao PostgreSQL com sucesso.")
                 return conn
             except ImportError:
-                logger.error("DB: DATABASE_URL detectada, mas 'psycopg2' não está instalado.")
+                logger.error("DB: DATABASE_URL detectada, mas 'psycopg2' não está instalado. Fallback para SQLite.")
             except Exception as e:
-                logger.error(f"DB: Falha ao conectar PostgreSQL: {e}. Usando SQLite como fallback.")
+                logger.error(f"DB: FALHA CRÍTICA ao conectar PostgreSQL: {e}")
+                logger.error(f"DB: ATENÇÃO — Dados serão salvos em SQLite LOCAL (efêmero no Railway). Configure SSL corretamente.")
+                logger.error(f"DB: URL usada: {db_url[:50]}... | sslmode={qs.get('sslmode', 'N/A')}")
         
         import sqlite3
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
